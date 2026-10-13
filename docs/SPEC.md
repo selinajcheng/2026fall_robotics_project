@@ -3,6 +3,7 @@
 **Scope:** Checkpoint 1 implementation guide.  
 **Source of truth for team tasks:** [`copy_of_shared_google_doc.md`](copy_of_shared_google_doc.md), especially its Pre-demo task list, plus Selina's clarifications.  
 **Course requirements:** [`project_specifications.pdf`](project_specifications.pdf).  
+**Visual environment:** [`VISUAL_ENVIRONMENT_SPEC.md`](VISUAL_ENVIRONMENT_SPEC.md) records Selina's scene requirements.
 **Earlier concept draft:** [`SPEC_IDEATION.md`](SPEC_IDEATION.md); useful ideas outside the current scope.
 
 ## Goal and first demonstration
@@ -36,7 +37,7 @@ These choices define how the first implementation's modules fit together. Record
 | Trash knowledge | World stores all trash; robot learns an item's location only when that item enters sensor range |
 | Audience view | Render all trash from the start while keeping undiscovered positions out of robot/planner state; indicate which items the robot has sensed |
 | People | Show people as fixed obstacles that the robot routes around |
-| Map and movement | Tile grid with four-direction moves; reject blocked or out-of-bounds moves |
+| Map and movement | Tile grid with four-direction moves; only sidewalk and marked crosswalk cells are traversable; reject buildings, ordinary roads, blocked cells, and out-of-bounds moves |
 | Pickup | Pick up when the robot reaches the trash cell; count each item once |
 | Priority | If trash is known and reachable, navigate to it; otherwise continue exploring |
 | Blocked target | Record the failure and select another reachable target; never loop indefinitely |
@@ -65,7 +66,7 @@ Before the rehearsal, run the fixed scene from a fresh launch and record whether
 
 1. Set and document the trash sensing radius and whether obstacles block sensing.
 2. Set and document any clearance around static people beyond their blocked cells.
-3. Set and document grid dimensions, tile scale, start point, and placement of the fixed scene.
+3. The current four-block world uses 36 columns, 24 rows, 28-pixel tiles, and start cell `(1, 1)`. Four equal 16-by-10-cell rectangular blocks each contain a cluster of six or seven stepped grey rooftop volumes and a two-cell sidewalk ring with rounded visual corners. Four-cell roads form a central intersection, and eight marked crosswalks connect the blocks: four around the intersection and one at the end of each road, giving 416 walkable cells. The center of the intersection has no lane paint; white stop bars and dashed lane lines sit on the approaches. The map lives in `sim/scene.py` and is drawn by `sim/render.py`. Document any later scene-placement changes here.
 4. Document the route tie-break rule when multiple targets have the same planned path length.
 5. If station behavior, capacity, or unloading is added after the core loop works, document its rules and update the demo plan.
 
