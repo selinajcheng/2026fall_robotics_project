@@ -15,6 +15,8 @@ from sim.collection import TrashCollector
 from sim.grid_navigation import find_grid_path, nearest_target, reachable_cells
 from sim.render import draw_world
 from sim.scene import create_city_scene
+from icons import pedestrian_icon, trash_icon, trash_can_icon, robot_icon, obstacle_icon
+
 
 
 SCENE = create_city_scene()
@@ -54,7 +56,8 @@ def robot_center_cell(robot):
 def draw_cell_circle(screen, cell, color, radius):
     pygame.draw.circle(screen, color, tuple(map(round, cell_center(cell))), radius)
 
-
+def blit_cell(screen, icon, cell):
+    screen.blit(icon, icon.get_rect(center = tuple(map(round, cell_center(cell)))))
 class Demo:
     def __init__(self):
         for cell in PEOPLE_CELLS | OBSTACLE_CELLS | TRASH_CELLS | {STATION_CELL}:
@@ -75,6 +78,12 @@ class Demo:
         self.visited = set()
         self.status = "STARTING"
         self.unloading_timer = 0.0  # Pause briefly to show unloading in the demo
+        self.person_img = pedestrian_icon(26)
+        self.can_img = trash_can_icon(26)
+        self.robot_img = robot_icon(24)
+        self.trash_unseen_img = trash_icon(18, (209, 70, 63)) # red = unseen
+        self.trash_seen_img = trash_icon(18, (38, 174, 88)) # green = seen
+        self.obstacle_img = obstacle_icon(24)
 
     def update(self, dt):
         # Keep the robot parked at the disposal station briefly so the class
@@ -147,16 +156,14 @@ class Demo:
         draw_world(screen, SCENE)  # Selina's original city unchanged
         for cell in OBSTACLE_CELLS:
             center = tuple(map(round, cell_center(cell)))
-            pygame.draw.rect(screen, (90, 90, 100), pygame.Rect(center[0]-10, center[1]-10, 20, 20), border_radius=3)
+            screen.blit(self.obstacle_img, self.obstacle_img.get_rect(center=center))
         for cell in PEOPLE_CELLS:
-            draw_cell_circle(screen, cell, (239, 141, 37), 10)
-            draw_cell_circle(screen, cell, (250, 232, 199), 3)
-        draw_cell_circle(screen, STATION_CELL, (45, 155, 89), 12)
-        draw_cell_circle(screen, STATION_CELL, (255, 255, 255), 5)
+            blit_cell(screen, self.person_img, cell)
+        blit_cell(screen, self.can_img, STATION_CELL)
         for cell in self.trash:
             discovered = cell in self.collector.known_trash
-            draw_cell_circle(screen, cell, (38, 174, 88) if discovered else (209, 70, 63), 7)
-        self.robot.draw(screen)  # Mahbub's original drawing code
+            blit_cell(screen, self.trash_seen_img if discovered else self.trash_unseen_img, cell)
+        screen.blit(self.robot_img, self.robot_img.get_rect(center=(round(self.robot.x), round(self.robot.y))))
 
         # Bottom information panel (HUD)
         hud_height = 108
@@ -209,16 +216,15 @@ class Demo:
         col2_x = legend_x + 165
         
         # row 1 col 1: unseen trash
-        pygame.draw.circle(screen, (209, 70, 63), (col1_x + 12, hud_top + 22), 7)
+        screen.blit(self.trash_unseen_img, self.trash_unseen_img.get_rect(center=(col1_x + 12, hud_top + 22)))
         screen.blit(small_font.render("Unseen Trash", True, white), (col1_x + 32, hud_top + 16))
 
         # row 1 col 2:disposal station
-        pygame.draw.circle(screen, (45, 155, 89), (col2_x + 12, hud_top + 22), 12)
-        pygame.draw.circle(screen, (255, 255, 255), (col2_x + 12, hud_top + 22), 5)
+        screen.blit(self.can_img, self.can_img.get_rect(center=(col2_x + 12, hud_top + 22)))
         screen.blit(small_font.render("Disposal Station", True, white), (col2_x + 32, hud_top + 16))
 
         # row 2 col 1: detected trash
-        pygame.draw.circle(screen, (38, 174, 88), (col1_x + 12, hud_top + 50), 7)
+        screen.blit(self.trash_seen_img, self.trash_seen_img.get_rect(center=(col1_x + 12, hud_top + 50)))
         screen.blit(small_font.render("Detected Trash", True, white), (col1_x + 32, hud_top + 44))
 
         # row 2 col 1: start location
@@ -227,12 +233,11 @@ class Demo:
         screen.blit(small_font.render("Start Location", True, white), (col2_x + 32, hud_top + 44))
 
         # row 3 col 1: Person
-        pygame.draw.circle(screen, (239, 141, 37), (col1_x + 12, hud_top + 78), 10)
-        pygame.draw.circle(screen, (250, 232, 199), (col1_x + 12, hud_top + 78), 3)
+        screen.blit(self.person_img, self.person_img.get_rect(center=(col1_x + 12, hud_top + 78)))
         screen.blit(small_font.render("Person", True, white), (col1_x + 32, hud_top + 72))
 
         # row 3 col 2: obstacle
-        pygame.draw.rect(screen, (90, 90, 100), pygame.Rect(col2_x + 4, hud_top + 68, 16, 16), border_radius=3)
+        screen.blit(self.obstacle_img, self.obstacle_img.get_rect(center=(col2_x + 12, hud_top + 78)))
         screen.blit(small_font.render("Obstacle", True, white), (col2_x + 32, hud_top + 72))
 
 
