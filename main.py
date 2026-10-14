@@ -99,7 +99,7 @@ class Demo:
         self.visited.add(cell)
         self.collector.detect(cell, self.trash)
         self.collector.collect(cell, self.trash)
-        if self.collector.is_full and cell == STATION_CELL:
+        if cell == STATION_CELL and self.collector.current_load > 0: # changed so that robot can throw away without full trash at the end
             if self.collector.unload(cell, STATION_CELL):
                 self.unloading_timer = 1.2  # Seconds visible at the disposal station
                 self.status = "UNLOADING TRASH"
@@ -118,7 +118,19 @@ class Demo:
                 desired = nearest_target(
                     SCENE.world, cell, self.reachable - self.visited, BLOCKED
                 )
-                next_status = "SWEEPING SIDEWALKS" if desired else "COMPLETE"
+                if desired is not None:
+                    next_status = "SWEEPING SIDEWALKS"
+                else:
+                    # after sweeping is done then dump out trash if has trash otherwise go to start
+                    if self.collector.current_load > 0:
+                        desired = STATION_CELL
+                        next_status = "RETURNING TO STATION"
+                    elif cell != SCENE.start_cell:
+                        desired = SCENE.start_cell
+                        next_status = "RETURNING TO START"
+                    else:
+                        desired = None
+                        next_status = "COMPLETE"
 
         # Replan each time the robot arrives at a cell. This allows newly
         # detected trash to interrupt exploration without skipping pickups.
@@ -188,13 +200,47 @@ class Demo:
 
         percent = round(load / capacity * 100)
         screen.blit(font.render(f"{percent}% full", True, white), (bar_x + bar_width + 12, hud_top + 58))
-        instructions = "Red = unseen trash | Green = detected trash | R = restart | Esc = quit"
+        instructions = "R = restart | Esc = quit"
         screen.blit(small_font.render(instructions, True, (218, 223, 230)), (14, hud_top + 87))
+
+        # right side of bottom info panel with 2 columns
+        legend_x = screen.get_width() - 340
+        col1_x = legend_x
+        col2_x = legend_x + 165
+        
+        # row 1 col 1: unseen trash
+        pygame.draw.circle(screen, (209, 70, 63), (col1_x + 12, hud_top + 22), 7)
+        screen.blit(small_font.render("Unseen Trash", True, white), (col1_x + 32, hud_top + 16))
+
+        # row 1 col 2:disposal station
+        pygame.draw.circle(screen, (45, 155, 89), (col2_x + 12, hud_top + 22), 12)
+        pygame.draw.circle(screen, (255, 255, 255), (col2_x + 12, hud_top + 22), 5)
+        screen.blit(small_font.render("Disposal Station", True, white), (col2_x + 32, hud_top + 16))
+
+        # row 2 col 1: detected trash
+        pygame.draw.circle(screen, (38, 174, 88), (col1_x + 12, hud_top + 50), 7)
+        screen.blit(small_font.render("Detected Trash", True, white), (col1_x + 32, hud_top + 44))
+
+        # row 2 col 1: start location
+        pygame.draw.circle(screen, (240, 240, 235), (col2_x + 12, hud_top + 50), 12)
+        pygame.draw.circle(screen, (38, 112, 207), (col2_x + 12, hud_top + 50), 9)
+        screen.blit(small_font.render("Start Location", True, white), (col2_x + 32, hud_top + 44))
+
+        # row 3 col 1: Person
+        pygame.draw.circle(screen, (239, 141, 37), (col1_x + 12, hud_top + 78), 10)
+        pygame.draw.circle(screen, (250, 232, 199), (col1_x + 12, hud_top + 78), 3)
+        screen.blit(small_font.render("Person", True, white), (col1_x + 32, hud_top + 72))
+
+        # row 3 col 2: obstacle
+        pygame.draw.rect(screen, (90, 90, 100), pygame.Rect(col2_x + 4, hud_top + 68, 16, 16), border_radius=3)
+        screen.blit(small_font.render("Obstacle", True, white), (col2_x + 32, hud_top + 72))
 
 
 def run(frame_limit=None, screenshot=None):
     pygame.init()
-    screen = pygame.display.set_mode(SCENE.world.pixel_size)
+    width, height = SCENE.world.pixel_size
+    hud_height = 108
+    screen = pygame.display.set_mode((width, height + hud_height))
     pygame.display.set_caption("Sidewalk Trash Robot - Integrated Checkpoint 1")
     clock = pygame.time.Clock()
     demo = Demo()
