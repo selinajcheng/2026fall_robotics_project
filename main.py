@@ -15,6 +15,8 @@ from sim.collection import TrashCollector
 from sim.grid_navigation import find_grid_path, nearest_target, reachable_cells
 from sim.render import draw_world
 from sim.scene import create_city_scene
+from sim.traffic import TrafficSystem
+from sim.traffic_render import draw_traffic
 from icons import pedestrian_icon, trash_icon, trash_can_icon, robot_icon, obstacle_icon
 
 
@@ -24,8 +26,8 @@ TILE = SCENE.world.tile_size
 
 # Temporary fixed test objects until Amaya's scene objects are integrated.
 # These are CITY GRID CELLS (column, row), not pixel coordinates.
-PEOPLE_CELLS = {(8, 1), (25, 14)}
-OBSTACLE_CELLS = {(14, 0), (30, 15)}
+PEOPLE_CELLS = set()  # CHECKPOINT2_TRAFFIC_V2: no static placeholders
+OBSTACLE_CELLS = set()  # Dynamic pedestrians will be integrated separately
 TRASH_CELLS = {(4, 1), (13, 1), (21, 1), (34, 21), (22, 22), (1, 20), (14, 16)}
 STATION_CELL = (1, 2)
 BLOCKED = PEOPLE_CELLS | OBSTACLE_CELLS
@@ -78,14 +80,17 @@ class Demo:
         self.visited = set()
         self.status = "STARTING"
         self.unloading_timer = 0.0  # Pause briefly to show unloading in the demo
-        self.person_img = pedestrian_icon(26)
+        self.traffic = TrafficSystem(SCENE)
+        self._waiting_at_light = False
         self.can_img = trash_can_icon(26)
         self.robot_img = robot_icon(24)
         self.trash_unseen_img = trash_icon(18, (209, 70, 63)) # red = unseen
         self.trash_seen_img = trash_icon(18, (38, 174, 88)) # green = seen
-        self.obstacle_img = obstacle_icon(24)
 
     def update(self, dt):
+        # Pass the robot's actual cell so cars cannot enter its crossing.
+        occupied_cell = (int(self.robot.x // TILE), int(self.robot.y // TILE))
+        self.traffic.update(dt, robot_cell=occupied_cell)
         # Keep the robot parked at the disposal station briefly so the class
         # can see that the bin is unloading before the robot resumes moving.
         if self.unloading_timer > 0:
@@ -149,16 +154,21 @@ class Demo:
                 raise RuntimeError(f"No route from {cell} to target {desired}")
             # Pass just ONE city-grid waypoint (converted to pixel center)
             # to Mahbub's existing Robot.set_path()/Robot.move().
+            # Wait *before* entering a crosswalk on a red WALK signal.
+            # Continue through a crossing once entered (no stopping in road).
+            if not self.traffic.robot_may_enter(cell, path[1], self.robot.speed):
+                if not self._waiting_at_light:
+                    self.traffic.wait_events += 1
+                self._waiting_at_light = True
+                self.status = 'WAITING FOR GREEN LIGHT'
+                return
+            self._waiting_at_light = False
             self.robot.set_path([cell_center(path[1])])
         self.status = next_status
 
     def draw(self, screen):
         draw_world(screen, SCENE)  # Selina's original city unchanged
-        for cell in OBSTACLE_CELLS:
-            center = tuple(map(round, cell_center(cell)))
-            screen.blit(self.obstacle_img, self.obstacle_img.get_rect(center=center))
-        for cell in PEOPLE_CELLS:
-            blit_cell(screen, self.person_img, cell)
+        draw_traffic(screen, SCENE, self.traffic)
         blit_cell(screen, self.can_img, STATION_CELL)
         for cell in self.trash:
             discovered = cell in self.collector.known_trash
@@ -207,7 +217,7 @@ class Demo:
 
         percent = round(load / capacity * 100)
         screen.blit(font.render(f"{percent}% full", True, white), (bar_x + bar_width + 12, hud_top + 58))
-        instructions = "R = restart | Esc = quit"
+        instructions = f"R = restart | Esc = quit | Signals: {self.traffic.phase} | Waits: {self.traffic.wait_events}"
         screen.blit(small_font.render(instructions, True, (218, 223, 230)), (14, hud_top + 87))
 
         # right side of bottom info panel with 2 columns
@@ -232,13 +242,9 @@ class Demo:
         pygame.draw.circle(screen, (38, 112, 207), (col2_x + 12, hud_top + 50), 9)
         screen.blit(small_font.render("Start Location", True, white), (col2_x + 32, hud_top + 44))
 
-        # row 3 col 1: Person
-        screen.blit(self.person_img, self.person_img.get_rect(center=(col1_x + 12, hud_top + 78)))
-        screen.blit(small_font.render("Person", True, white), (col1_x + 32, hud_top + 72))
-
-        # row 3 col 2: obstacle
-        screen.blit(self.obstacle_img, self.obstacle_img.get_rect(center=(col2_x + 12, hud_top + 78)))
-        screen.blit(small_font.render("Obstacle", True, white), (col2_x + 32, hud_top + 72))
+        # C = Car green/red; W = Robot WALK/WAIT. Both are synchronized.
+        screen.blit(small_font.render("C: car  |  W: robot", True, white),
+                    (col1_x + 12, hud_top + 73))
 
 
 def run(frame_limit=None, screenshot=None):
