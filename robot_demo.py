@@ -61,6 +61,8 @@ PEDESTRIAN_MARGIN = 18
 MOVEMENT_STEP = 2
 YIELD_DISTANCE = 125
 CLEARANCE_DISTANCE = 65
+SLOW_DOWN_DISTANCE = 140
+LANE_OFFSET_DISTANCE = 40
 
 font = pygame.font.SysFont("Arial", 22)
 
@@ -131,6 +133,30 @@ def calculate_route(destination):
         HEIGHT,
         robot.radius + STATIC_MARGIN
     )
+
+
+def get_alternate_route(destination, offset_sign=1):
+    start_pos = (robot.x, robot.y)
+    dx = destination[0] - start_pos[0]
+    dy = destination[1] - start_pos[1]
+    length = math.hypot(dx, dy)
+    
+    if length == 0:
+        return []
+    
+    nx = -dy / length
+    ny = dx / length
+    
+    detour_offset = LANE_OFFSET_DISTANCE * 1.5
+    mid_x = start_pos[0] + dx * 0.3 + nx * detour_offset * offset_sign
+    mid_y = start_pos[1] + dy * 0.3 + ny * detour_offset * offset_sign
+    
+    path_to_mid = find_path(start_pos, (mid_x, mid_y), obstacles, WIDTH, HEIGHT, robot.radius + STATIC_MARGIN)
+    path_to_goal = find_path((mid_x, mid_y), destination, obstacles, WIDTH, HEIGHT, robot.radius + STATIC_MARGIN)
+    
+    if path_to_mid and path_to_goal:
+        return path_to_mid + path_to_goal[1:]
+    return []
 
 
 def update_pedestrians(dt):
@@ -231,6 +257,19 @@ def update_pedestrians(dt):
 def update_robot(keys, dt):
     global status
 
+    min_dist_to_person = float('inf')
+    for person in pedestrians:
+        dist = distance_to_person(robot.x, robot.y, person)
+        if dist < min_dist_to_person:
+            min_dist_to_person = dist
+
+    base_speed = 150
+    if min_dist_to_person < SLOW_DOWN_DISTANCE:
+        factor = max(0.3, min_dist_to_person / SLOW_DOWN_DISTANCE)
+        robot.speed = base_speed * factor
+    else:
+        robot.speed = base_speed
+
     steps = max(
         1,
         math.ceil(robot.speed * dt / MOVEMENT_STEP)
@@ -253,6 +292,29 @@ def update_robot(keys, dt):
             return
 
         if not pedestrian_position_safe(robot.x, robot.y):
+            nearby_dirs = [
+                p["direction"] for p in pedestrians 
+                if distance_to_person(robot.x, robot.y, p) < 150
+            ]
+            if nearby_dirs:
+                avg_dir = sum(nearby_dirs) / len(nearby_dirs)
+                crowd_target_x = max(robot.radius, min(WIDTH - robot.radius, robot.x + avg_dir * 80))
+                crowd_target_y = robot.y
+                crowd_path = find_path((robot.x, robot.y), (crowd_target_x, crowd_target_y), obstacles, WIDTH, HEIGHT, robot.radius + STATIC_MARGIN)
+                if crowd_path:
+                    robot.set_path(crowd_path)
+                    status = "FOLLOWING CROWD"
+                    return
+
+            if goal is not None:
+                alt_path = get_alternate_route(goal, offset_sign=1)
+                if not alt_path:
+                    alt_path = get_alternate_route(goal, offset_sign=-1)
+                
+                if alt_path:
+                    robot.set_path(alt_path)
+                    status = "AVOIDING PEDESTRIAN / DETOURING"
+                    return
             robot.x = old_x
             robot.y = old_y
             robot.set_path(old_path)
