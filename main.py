@@ -124,43 +124,18 @@ class Demo:
         base_speed = 168
         min_dist_to_person = float('inf')
 
-        # Calculate the robot's current heading vector based on its next waypoint
-        robot_dx, robot_dy = 0, 0
-        if self.robot_next_cell is not None:
-            target_x, target_y = cell_center(self.robot_next_cell)
-            robot_dx = target_x - self.robot.x
-            robot_dy = target_y - self.robot.y
-            mag = math.hypot(robot_dx, robot_dy)
-            if mag > 0:
-                robot_dx /= mag
-                robot_dy /= mag
-
         if hasattr(self, 'pedestrians') and hasattr(self.pedestrians, 'occupied_cells'):
             for cell in self.pedestrians.occupied_cells():
                 p_x = (cell[0] + 0.5) * TILE
                 p_y = (cell[1] + 0.5) * TILE
                 
-                to_ped_x = p_x - self.robot.x
-                to_ped_y = p_y - self.robot.y
-                dist = math.hypot(to_ped_x, to_ped_y)
-
-                if robot_dx != 0 or robot_dy != 0:
-                    # Ignore anyone behind the robot
-                    dot = (to_ped_x * robot_dx) + (to_ped_y * robot_dy)
-                    if dot < 0:
-                        continue
-                    
-                    # This ignores people walking alongside in neighboring lanes.
-                    perp_dist = abs(to_ped_x * robot_dy - to_ped_y * robot_dx)
-                    if perp_dist > TILE * 0.6:
-                        continue
-
+                dist = math.hypot(self.robot.x - p_x, self.robot.y - p_y)
                 if dist < min_dist_to_person:
                     min_dist_to_person = dist
 
         SLOW_DOWN_DISTANCE = 120
         if min_dist_to_person < SLOW_DOWN_DISTANCE:
-            factor = max(0.2, min_dist_to_person / SLOW_DOWN_DISTANCE)
+            factor = max(0.3, min_dist_to_person / SLOW_DOWN_DISTANCE)
             self.robot.speed = base_speed * factor
         else:
             self.robot.speed = base_speed
