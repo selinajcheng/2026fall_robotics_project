@@ -7,7 +7,7 @@ Controls: ESC to quit, R to restart. The robot drives autonomously.
 
 import os
 import sys
-
+import math
 import pygame
 
 from robot import Robot  # Reuse Mahbub's robot implementation unchanged
