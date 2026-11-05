@@ -121,7 +121,7 @@ class Demo:
         # Pass the robot's actual cell so cars cannot enter its crossing.
         occupied_cell = (int(self.robot.x // TILE), int(self.robot.y // TILE))
 
-                base_speed = 168
+        base_speed = 168
         min_dist_to_person = float('inf')
 
         # Calculate the robot's current heading vector based on its next waypoint
