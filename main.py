@@ -18,6 +18,7 @@ from sim.scene import create_city_scene
 from sim.traffic import TrafficSystem
 from sim.traffic_render import draw_traffic
 from icons import pedestrian_icon, trash_icon, trash_can_icon, robot_icon, obstacle_icon
+from sim.pedestrian_grid import PedestrianManager, STEP_TIME
 
 
 
@@ -31,6 +32,16 @@ OBSTACLE_CELLS = set()  # Dynamic pedestrians will be integrated separately
 TRASH_CELLS = {(4, 1), (13, 1), (21, 1), (34, 21), (22, 22), (1, 20), (14, 16)}
 STATION_CELL = (1, 2)
 BLOCKED = PEOPLE_CELLS | OBSTACLE_CELLS
+
+#PEDESTRIAN SETTINGS
+DOOR_CELLS = []
+PEDESTRIAN_COUNT = 6  # how many pedestrians to spawn in the scene
+CROSSWALK_CELLS = {
+    (x,y)
+    for c in SCENE.crosswalks
+    for x in range(c.rect[0], c.rect[0] + c.rect[2])
+    for y in range(c.rect[1], c.rect[1] + c.rect[3])
+}
 
 # Mahbub's Robot.move() expects an indexable keyboard object; supplying
 # false for every key gives autonomous movement with no manual override.
@@ -81,16 +92,43 @@ class Demo:
         self.status = "STARTING"
         self.unloading_timer = 0.0  # Pause briefly to show unloading in the demo
         self.traffic = TrafficSystem(SCENE)
+
+        # ----- pedestrians -----
+        self.pedestrians = PedestrianManager(
+            SCENE.world,                   # the city world
+            self.reachable,                # cells pedestrians are allowed to use
+            BLOCKED,                       # permanently blocked cells
+            doors=DOOR_CELLS,              # building entrances (empty = auto-pick)
+            count=PEDESTRIAN_COUNT,        # how many pedestrians
+            # Never use the station, the robot's start, or crosswalks as doors/stroll targets
+            keep_clear={STATION_CELL, SCENE.start_cell} | CROSSWALK_CELLS,
+        )
+        self.robot_next_cell = None        # cell the robot is currently driving into (None = at rest)
+        self.ped_img = pedestrian_icon(20) # pedestrian sprite, 20 px
         self._waiting_at_light = False
         self.can_img = trash_can_icon(26)
         self.robot_img = robot_icon(24)
         self.trash_unseen_img = trash_icon(18, (209, 70, 63)) # red = unseen
         self.trash_seen_img = trash_icon(18, (38, 174, 88)) # green = seen
 
+        # ----- pedestrians obey the same crosswalk signal check as the robot -----
+    def _pedestrian_may_step(self, cell, next_cell):
+        # TILE / STEP_TIME = pedestrian walking speed in pixels per second
+        return self.traffic.robot_may_enter(cell, next_cell, TILE / STEP_TIME)
+
     def update(self, dt):
         # Pass the robot's actual cell so cars cannot enter its crossing.
         occupied_cell = (int(self.robot.x // TILE), int(self.robot.y // TILE))
-        self.traffic.update(dt, robot_cell=occupied_cell)
+
+        # ----- pedestrians first, staying out of the robot's cells -----
+        robot_cells = {occupied_cell}
+        if self.robot_next_cell is not None:
+            robot_cells.add(self.robot_next_cell)
+        self.pedestrians.update(dt, robot_cells, may_step=self._pedestrian_may_step)
+
+        self.traffic.update(dt, robot_cell=occupied_cell,
+                            walker_cells = self.pedestrians.occupied_cells())
+
         # Keep the robot parked at the disposal station briefly so the class
         # can see that the bin is unloading before the robot resumes moving.
         if self.unloading_timer > 0:
@@ -105,6 +143,8 @@ class Demo:
             self.robot.move(NO_KEYS, dt, *SCENE.world.pixel_size)
         if self.robot.path:
             return  # Still traveling to the next cell center
+
+        self.robot_next_cell = None
 
         cell = robot_center_cell(self.robot)
         if cell is None:
@@ -149,9 +189,17 @@ class Demo:
         # Replan each time the robot arrives at a cell. This allows newly
         # detected trash to interrupt exploration without skipping pickups.
         if desired is not None and desired != cell:
-            path = find_grid_path(SCENE.world, cell, desired, BLOCKED)
+            # ----- plan around pedestrians standing on (or stepping onto) cells -----
+            live_blocked = BLOCKED | self.pedestrians.occupied_cells()  # permanent blocks + pedestrians right now
+            path = find_grid_path(SCENE.world, cell, desired, live_blocked)
             if len(path) < 2:
-                raise RuntimeError(f"No route from {cell} to target {desired}")
+                # Check again WITHOUT pedestrians: if still no route, it's a real bug, so raise
+                if len(find_grid_path(SCENE.world, cell, desired, BLOCKED)) < 2:
+                    raise RuntimeError(f"No route from {cell} to target {desired}")
+                # Otherwise a pedestrian is just in the way, so wait and retry next frame
+                self.status = "YIELDING TO PEDESTRIAN"
+                return
+
             # Pass just ONE city-grid waypoint (converted to pixel center)
             # to Mahbub's existing Robot.set_path()/Robot.move().
             # Wait *before* entering a crosswalk on a red WALK signal.
@@ -164,6 +212,7 @@ class Demo:
                 return
             self._waiting_at_light = False
             self.robot.set_path([cell_center(path[1])])
+            self.robot_next_cell = path[1]  # reserve the cell we're driving into so pedestrians stay out
         self.status = next_status
 
     def draw(self, screen):
@@ -173,6 +222,7 @@ class Demo:
         for cell in self.trash:
             discovered = cell in self.collector.known_trash
             blit_cell(screen, self.trash_seen_img if discovered else self.trash_unseen_img, cell)
+        self.pedestrians.draw(screen, self.ped_img) # draw all visible pedestrians
         screen.blit(self.robot_img, self.robot_img.get_rect(center=(round(self.robot.x), round(self.robot.y))))
 
         # Bottom information panel (HUD)
