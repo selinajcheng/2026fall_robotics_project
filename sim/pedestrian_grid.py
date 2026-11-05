@@ -2,6 +2,9 @@
 
 Pedestrians walk in the sidewalk/crosswalk cells. The robot will treat the cells they occupy as temporarily blocked and yields until they pass. 
 
+NEW RULES FOR PEDESTRIANS:
+1: head on pedestrians can walk through/past eachother
+2: nobody steps onto the crosswalk unles the WHOLE crossing is clear so that no one gets stranded in the street
 """
 import random
 import pygame
@@ -15,13 +18,13 @@ STUCK_TIMEOUT = 2.0 #seconds of being blocked giving up and picking a new destin
 
 # ===== SINGLE PEDESTRIAN =====
 class Pedestrian:
-    def __init__(self, world, doors, cells, static_blocked, rng, start_cell, start_inside):
+    def __init__(self, world, doors, cells, static_blocked, rng, start_cell, start_inside, crosswalk_cells = ()):
         self.world = world                  # the city world (needed by find_grid_path)
         self.doors = doors                  # list of cells where pedestrians enter/exit buildings
         self.cells = cells                  # list of cells usable as random "stroll" destinations
         self.static_blocked = static_blocked  # permanently blocked cells (never walk through these)
         self.rng = rng                      # shared random generator (seeded so runs repeat)
- 
+        self.crosswalk_cells = set(crosswalk_cells) #every cell that is part of a crosswalk
         self.cell = start_cell              # the cell the pedestrian is standing on / just left
         self.next_cell = None               # the cell being walked into (None = standing still)
         self.progress = 0.0                 # how far along the step is: 0.0 = start, 1.0 = arrived
@@ -57,9 +60,29 @@ class Pedestrian:
         self.path = []
         self.goal = None
         self.goal_is_door = False
+
+    # --- crosswalk safety: is anything in the way of the WHOLE crossing? ---
+    def _crossing_blocked(self, blocked):
+        for c in self.path:                 # walk along the upcoming route
+            if c not in self.crosswalk_cells:
+                break                       # past the end of the crosswalk: stop checking
+            if c in blocked:
+                return True                 # someone is on a crosswalk cell we need
+        return False
+
+    # --- head-on check: are we and 'other' trying to swap places? ---
+    def is_head_on_with(self, other):
+        if self.inside or other.inside:
+            return False                    # people inside buildings aren't in the way
+        if self.next_cell is not None or other.next_cell is not None:
+            return False                    # only handle two pedestrians who are both standing still
+        if not self.path or not other.path:
+            return False                    # someone has no route right now
+        # Each one wants the cell the other is standing on
+        return self.path[0] == other.cell and other.path[0] == self.cell
  
     # --- per-frame update ---
-    def update(self, dt, blocked, may_step=None):
+    def update(self, dt, blocked, may_step=None, passable = ()):
         """dt = seconds since last frame.
         blocked = cells held by the robot and other pedestrians (not our own).
         may_step = optional function(cell, next_cell) -> bool, used for crosswalk signals."""
@@ -100,9 +123,16 @@ class Pedestrian:
         nxt = self.path[0]                  # the next cell on our route (peek, don't remove yet)
         if may_step is not None and not may_step(self.cell, nxt):
             return                          # a crosswalk signal says wait; this is NOT counted as stuck
-        if nxt in blocked:                  # robot or another pedestrian is in that cell (or entering it)
+        # About to step from the curb onto a crosswalk: wait until the whole crossing is clear
+        if nxt in self.crosswalk_cells and self.cell not in self.crosswalk_cells:
+            if self._crossing_blocked(blocked):
+                return                      # wait on the curb (not counted as stuck)
+
+        # Blocked by someone? (head-on pedestrians are 'passable', so we just walk past them)
+        if nxt in blocked and nxt not in passable:
             self.blocked_time += dt         # count how long we've been waiting on them
-            if self.blocked_time > STUCK_TIMEOUT:
+            # Give up on the trip, but NEVER while standing in a crosswalk
+            if self.blocked_time > STUCK_TIMEOUT and self.cell not in self.crosswalk_cells:
                 self.blocked_time = 0.0
                 self._drop_goal()           # give up this trip so a new route gets picked
             return
@@ -132,7 +162,7 @@ class Pedestrian:
  
 # ===== MANAGER (what main.py talks to) =====
 class PedestrianManager:
-    def __init__(self, world, cells, static_blocked, doors=None, count=6, seed=7, keep_clear=()):
+    def __init__(self, world, cells, static_blocked, doors=None, count=6, seed=7, keep_clear=(), crosswalk_cells=()):
         rng = random.Random(seed)           # one seeded generator so every run looks the same
         self.tile = world.tile_size         # pixels per grid cell (for drawing)
  
@@ -151,16 +181,20 @@ class PedestrianManager:
             # Extra pedestrians beyond the door count also start inside to avoid overlapping.
             start_inside = (i % 2 == 0) or (i >= len(self.doors))
             self.peds.append(
-                Pedestrian(world, self.doors, candidates, static_blocked, rng, door, start_inside)
+                Pedestrian(world, self.doors, candidates, static_blocked, rng, door, start_inside, crosswalk_cells)
             )
  
     def update(self, dt, robot_cells, may_step=None):
         for p in self.peds:
             blocked = set(robot_cells)      # start with the cells the robot holds
+            passable = set()                # cells of head-on pedestrians p may walk past
             for other in self.peds:
-                if other is not p:
-                    blocked |= other.occupied_cells()  # add every OTHER pedestrian's cells
-            p.update(dt, blocked, may_step)
+                if other is p:
+                    continue
+                blocked |= other.occupied_cells()  # add every OTHER pedestrian's cells
+                if p.is_head_on_with(other):
+                    passable.add(other.cell)       # standoff: let them swap
+            p.update(dt, blocked, may_step, passable)
  
     def occupied_cells(self):
         # All cells currently held by any visible pedestrian (the robot and traffic read this)

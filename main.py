@@ -102,6 +102,7 @@ class Demo:
             count=PEDESTRIAN_COUNT,        # how many pedestrians
             # Never use the station, the robot's start, or crosswalks as doors/stroll targets
             keep_clear={STATION_CELL, SCENE.start_cell} | CROSSWALK_CELLS,
+            crosswalk_cells=CROSSWALK_CELLS,
         )
         self.robot_next_cell = None        # cell the robot is currently driving into (None = at rest)
         self.ped_img = pedestrian_icon(20) # pedestrian sprite, 20 px
