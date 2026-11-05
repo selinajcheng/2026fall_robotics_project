@@ -111,6 +111,50 @@ class CityScene:
         return "road"
 
 
+def building_entrance_targets(
+    scene: CityScene,
+    keep_clear: frozenset[Cell] | set[Cell] = frozenset(),
+) -> dict[Cell, Cell]:
+    """Map each distinct sidewalk entrance to one adjacent building cell."""
+    entrances: dict[Cell, Cell] = {}
+    used: set[Cell] = set()
+    for building in scene.buildings:
+        left, top, width, height = building.rect
+        center_x = left + (width - 1) / 2
+        center_y = top + (height - 1) / 2
+        adjacent: set[Cell] = set()
+        for cell in cells_in(building.rect):
+            x, y = cell
+            for neighbor in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if neighbor in scene.sidewalk_cells and neighbor not in keep_clear:
+                    adjacent.add(neighbor)
+        choices = sorted(
+            adjacent - used,
+            key=lambda cell: (
+                abs(cell[0] - center_x) + abs(cell[1] - center_y),
+                cell[1],
+                cell[0],
+            ),
+        )
+        if choices:
+            entrance = choices[0]
+            x, y = entrance
+            building_neighbors = cells_in(building.rect) & {
+                (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)
+            }
+            entrances[entrance] = min(building_neighbors)
+            used.add(entrance)
+    return entrances
+
+
+def building_entrance_cells(
+    scene: CityScene,
+    keep_clear: frozenset[Cell] | set[Cell] = frozenset(),
+) -> tuple[Cell, ...]:
+    """Choose one distinct sidewalk entrance beside each eligible building."""
+    return tuple(building_entrance_targets(scene, keep_clear))
+
+
 def place_buildings(lots: tuple[CellRect, ...]) -> tuple[Building, ...]:
     """Turn `BLOCK_LAYOUTS` into buildings, rejecting any that leave their lot or overlap."""
     buildings: list[Building] = []

@@ -14,9 +14,10 @@ from robot import Robot  # Reuse Mahbub's robot implementation unchanged
 from sim.collection import TrashCollector
 from sim.grid_navigation import find_grid_path, nearest_target, reachable_cells
 from sim.render import draw_world
-from sim.scene import create_city_scene
+from sim.scene import building_entrance_targets, create_city_scene
 from sim.traffic import TrafficSystem
 from sim.traffic_render import draw_traffic
+from sim.trash_layout import random_trash_cells
 from icons import pedestrian_icon, trash_icon, trash_can_icon, robot_icon, obstacle_icon
 from sim.pedestrian_grid import PedestrianManager, STEP_TIME
 
@@ -29,13 +30,12 @@ TILE = SCENE.world.tile_size
 # These are CITY GRID CELLS (column, row), not pixel coordinates.
 PEOPLE_CELLS = set()  # CHECKPOINT2_TRAFFIC_V2: no static placeholders
 OBSTACLE_CELLS = set()  # Dynamic pedestrians will be integrated separately
-TRASH_CELLS = {(4, 1), (13, 1), (21, 1), (34, 21), (22, 22), (1, 20), (14, 16)}
 STATION_CELL = (1, 2)
+TRASH_COUNT = 7
 BLOCKED = PEOPLE_CELLS | OBSTACLE_CELLS
 
 #PEDESTRIAN SETTINGS
-DOOR_CELLS = []
-PEDESTRIAN_COUNT = 6  # how many pedestrians to spawn in the scene
+CLOCK_SPEED = 240  # simulated seconds per real second (4 simulated minutes/second)
 CROSSWALK_CELLS = {
     (x,y)
     for c in SCENE.crosswalks
@@ -73,24 +73,32 @@ def blit_cell(screen, icon, cell):
     screen.blit(icon, icon.get_rect(center = tuple(map(round, cell_center(cell)))))
 class Demo:
     def __init__(self):
-        for cell in PEOPLE_CELLS | OBSTACLE_CELLS | TRASH_CELLS | {STATION_CELL}:
+        self.trash = random_trash_cells(
+            SCENE, TRASH_COUNT, keep_clear={STATION_CELL}
+        )
+        pedestrian_keep_clear = (
+            {STATION_CELL, SCENE.start_cell} | self.trash | CROSSWALK_CELLS
+        )
+        door_targets = building_entrance_targets(SCENE, pedestrian_keep_clear)
+
+        for cell in PEOPLE_CELLS | OBSTACLE_CELLS | self.trash | {STATION_CELL}:
             if not SCENE.world.is_walkable(cell):
                 raise ValueError(f"Scene object {cell} is not on a sidewalk/crosswalk")
         if SCENE.start_cell in BLOCKED:
             raise ValueError("Robot starting cell is blocked")
-        if (TRASH_CELLS | {STATION_CELL}) & BLOCKED:
+        if (self.trash | {STATION_CELL}) & BLOCKED:
             raise ValueError("Trash or the station overlaps an obstacle/person")
 
         self.robot = Robot(*cell_center(SCENE.start_cell))
         # 28px sidewalk cells need a smaller robot than Mahbub's 20px radius.
         self.robot.radius = 9
         self.robot.speed = 168  # pixels per second
-        self.trash = set(TRASH_CELLS)  # World knows all trash; robot does not
         self.collector = TrashCollector(sensor_range=2, capacity=3)
         self.reachable = reachable_cells(SCENE.world, SCENE.start_cell, BLOCKED)
         self.visited = set()
         self.status = "STARTING"
         self.unloading_timer = 0.0  # Pause briefly to show unloading in the demo
+        self.simulated_seconds = 5 * 60 * 60  # Start each run at 5:00 AM
         self.traffic = TrafficSystem(SCENE)
 
         # ----- pedestrians -----
@@ -98,10 +106,8 @@ class Demo:
             SCENE.world,                   # the city world
             self.reachable,                # cells pedestrians are allowed to use
             BLOCKED,                       # permanently blocked cells
-            doors=DOOR_CELLS,              # building entrances (empty = auto-pick)
-            count=PEDESTRIAN_COUNT,        # how many pedestrians
-            # Never use the station, the robot's start, or crosswalks as doors/stroll targets
-            keep_clear={STATION_CELL, SCENE.start_cell} | CROSSWALK_CELLS,
+            door_targets=door_targets,     # entrances and their adjacent building cells
+            keep_clear=pedestrian_keep_clear,
             crosswalk_cells=CROSSWALK_CELLS,
         )
         self.robot_next_cell = None        # cell the robot is currently driving into (None = at rest)
@@ -118,6 +124,9 @@ class Demo:
         return self.traffic.robot_may_enter(cell, next_cell, TILE / STEP_TIME)
 
     def update(self, dt):
+        # Advance the display clock continuously, wrapping after 24 simulated hours.
+        self.simulated_seconds = (self.simulated_seconds + dt * CLOCK_SPEED) % (24 * 60 * 60)
+
         # Pass the robot's actual cell so cars cannot enter its crossing.
         occupied_cell = (int(self.robot.x // TILE), int(self.robot.y // TILE))
 
@@ -144,7 +153,10 @@ class Demo:
         robot_cells = {occupied_cell}
         if self.robot_next_cell is not None:
             robot_cells.add(self.robot_next_cell)
-        self.pedestrians.update(dt, robot_cells, may_step=self._pedestrian_may_step)
+        self.pedestrians.update(
+            dt, robot_cells, self.simulated_seconds,
+            may_step=self._pedestrian_may_step,
+        )
 
         self.traffic.update(dt, robot_cell=occupied_cell,
                             walker_cells = self.pedestrians.occupied_cells())
@@ -259,8 +271,15 @@ class Demo:
         small_font = pygame.font.Font(None, 19)
         white = (255, 255, 255)
 
+        total_minutes = int(self.simulated_seconds // 60)
+        hour_24, minute = divmod(total_minutes, 60)
+        period = "AM" if hour_24 < 12 else "PM"
+        hour_12 = hour_24 % 12 or 12
+        clock_text = font.render(f"{hour_12}:{minute:02d} {period}", True, white)
+        screen.blit(clock_text, clock_text.get_rect(midtop=(screen.get_width() // 2, hud_top + 7)))
+
         summary = (
-            f"Collected: {self.collector.collected_count}/{len(TRASH_CELLS)}"
+            f"Collected: {self.collector.collected_count}/{TRASH_COUNT}"
             f"     Unloads: {self.collector.unloads}"
             f"     Visited: {len(self.visited)}/{len(self.reachable)}"
         )
