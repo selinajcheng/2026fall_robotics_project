@@ -239,27 +239,34 @@ class TrafficSystem:
         return not any(car.axis == axis and self._car_occupies_zone(car, zone)
                        for car in self.cars)
 
-    def update(self, dt, robot_cell=None):
+    def update(self, dt, robot_cell=None, walker_cells=()):
         if dt < 0:
             raise ValueError("dt must be nonnegative")
-        # Split large dt across actual signal boundaries; otherwise a long frame
-        # could skip a red phase and push a car through a crosswalk.
-        pending = dt
+
+        # ----- split a long frame into small slices so cars can't skip a red light -----
+        pending = dt                                   # time still left to simulate
         while pending > 1e-9:
-            _, left_in_phase = self.phase_and_remaining
-            portion = min(pending, left_in_phase)
-            # ROS2/Pygame may provide a coarse step: subdivide enough that cars
-            # cannot teleport past a stop-line between signal boundary checks.
-            portion = min(portion, 0.05)
+            _, left_in_phase = self.phase_and_remaining  # seconds left in the current signal phase
+            portion = min(pending, left_in_phase)      # never step past a signal change
+            portion = min(portion, 0.05)               # never step more than 0.05 s at a time
+
+            # ----- work out which crossing zones cars must NOT enter this slice -----
             axis_blocked = {"EW": set(), "NS": set()}
+            held_cells = list(walker_cells)            # cells held by pedestrians
             if robot_cell is not None:
-                occupied = crossing_at(self.scene, robot_cell)
+                held_cells.append(robot_cell)          # plus the robot's cell
+            for held in held_cells:
+                occupied = crossing_at(self.scene, held)  # None if it's plain sidewalk
                 if occupied is not None:
-                    axis = crosswalk_axis(occupied)
-                    axis_blocked[axis].add(self.zone_for_crossing(occupied))
+                    # Block that crosswalk's whole zone for cars on that axis
+                    axis_blocked[crosswalk_axis(occupied)].add(self.zone_for_crossing(occupied))
+
+            # ----- move every car, respecting signals and blocked zones -----
             for car in self.cars:
                 car.advance(portion, self.vehicle_green(car.axis),
                             self.phase_and_remaining[1], self.scene.world,
                             self.zones[car.axis], axis_blocked[car.axis])
+
+            # ----- advance the clock (these two lines must be at THIS indent level) -----
             self.elapsed += portion
             pending -= portion
