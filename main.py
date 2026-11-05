@@ -121,6 +121,50 @@ class Demo:
         # Pass the robot's actual cell so cars cannot enter its crossing.
         occupied_cell = (int(self.robot.x // TILE), int(self.robot.y // TILE))
 
+                base_speed = 168
+        min_dist_to_person = float('inf')
+
+        # Calculate the robot's current heading vector based on its next waypoint
+        robot_dx, robot_dy = 0, 0
+        if self.robot_next_cell is not None:
+            target_x, target_y = cell_center(self.robot_next_cell)
+            robot_dx = target_x - self.robot.x
+            robot_dy = target_y - self.robot.y
+            mag = math.hypot(robot_dx, robot_dy)
+            if mag > 0:
+                robot_dx /= mag
+                robot_dy /= mag
+
+        if hasattr(self, 'pedestrians') and hasattr(self.pedestrians, 'occupied_cells'):
+            for cell in self.pedestrians.occupied_cells():
+                p_x = (cell[0] + 0.5) * TILE
+                p_y = (cell[1] + 0.5) * TILE
+                
+                to_ped_x = p_x - self.robot.x
+                to_ped_y = p_y - self.robot.y
+                dist = math.hypot(to_ped_x, to_ped_y)
+
+                if robot_dx != 0 or robot_dy != 0:
+                    # Ignore anyone behind the robot
+                    dot = (to_ped_x * robot_dx) + (to_ped_y * robot_dy)
+                    if dot < 0:
+                        continue
+                    
+                    # This ignores people walking alongside in neighboring lanes.
+                    perp_dist = abs(to_ped_x * robot_dy - to_ped_y * robot_dx)
+                    if perp_dist > TILE * 0.6:
+                        continue
+
+                if dist < min_dist_to_person:
+                    min_dist_to_person = dist
+
+        SLOW_DOWN_DISTANCE = 120
+        if min_dist_to_person < SLOW_DOWN_DISTANCE:
+            factor = max(0.2, min_dist_to_person / SLOW_DOWN_DISTANCE)
+            self.robot.speed = base_speed * factor
+        else:
+            self.robot.speed = base_speed
+
         # ----- pedestrians first, staying out of the robot's cells -----
         robot_cells = {occupied_cell}
         if self.robot_next_cell is not None:
@@ -160,18 +204,21 @@ class Demo:
                 self.status = "UNLOADING TRASH"
                 return
 
+        # Define live blocked cells including current pedestrians
+        live_blocked = BLOCKED | self.pedestrians.occupied_cells()
+
         if self.collector.is_full:
             desired = STATION_CELL
             next_status = "FULL - RETURNING TO BIN"
         else:
             # Plan only using trash that the robot has ACTUALLY sensed.
             known_targets = self.collector.known_trash & self.reachable
-            desired = nearest_target(SCENE.world, cell, known_targets, BLOCKED)
+            desired = nearest_target(SCENE.world, cell, known_targets, live_blocked)
             if desired is not None:
                 next_status = "COLLECTING TRASH"
             else:
                 desired = nearest_target(
-                    SCENE.world, cell, self.reachable - self.visited, BLOCKED
+                    SCENE.world, cell, self.reachable - self.visited, live_blocked
                 )
                 if desired is not None:
                     next_status = "SWEEPING SIDEWALKS"
