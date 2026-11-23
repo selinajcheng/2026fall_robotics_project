@@ -1,4 +1,4 @@
-"""Checkpoint 2 synchronized road traffic; pure Python and ROS 2 portable.
+"""Checkpoint 3 synchronized road traffic; pure Python and ROS 2 portable.
 
 There is ONE deterministic signal controller shared by cars and the robot.
 Every pedestrian crossing is part of an exclusive vehicle conflict zone:
@@ -12,8 +12,19 @@ This is a controlled grid demo, not general-purpose vehicle dynamics.
 from dataclasses import dataclass
 
 # Deliberately fixed, reproducible signal timing.
-PHASES = (("NS_GREEN", 9.0), ("ALL_RED_NS", 2.5),
-          ("EW_GREEN", 9.0), ("ALL_RED_EW", 2.5))
+# Keep an all-red clearance interval between each direction's yellow and green.
+GREEN_TIME = 9.0
+YELLOW_TIME = 1.5
+ALL_RED_TIME = 2.5
+
+PHASES = (
+    ("NS_GREEN", GREEN_TIME),
+    ("NS_YELLOW", YELLOW_TIME),
+    ("ALL_RED_NS", ALL_RED_TIME),
+    ("EW_GREEN", GREEN_TIME),
+    ("EW_YELLOW", YELLOW_TIME),
+    ("ALL_RED_EW", ALL_RED_TIME),
+)
 CYCLE_DURATION = sum(duration for _, duration in PHASES)
 STOP_GAP = 20.0  # front bumper stays behind the painted STOP bar (~11 px before crossing)
 CAR_CLEARANCE = 0.35  # add on top of estimated crossing time
@@ -62,7 +73,7 @@ def conflict_zones(scene, axis):
 
 
 def signal_position(scene, crossing):
-    """Place one C/W signal head per crosswalk, on an actual sidewalk.
+    """Place one car/pedestrian signal pair per crosswalk, on an actual sidewalk.
 
     Positions deliberately alternate around the four city blocks so a
     north/south crossing head cannot stack on the adjacent east/west head.
@@ -190,14 +201,28 @@ class TrafficSystem:
     def phase(self):
         return self.phase_and_remaining[0]
 
-    def vehicle_green(self, axis):
+    def vehicle_signal(self, axis):
+        """Displayed vehicle indication: RED, YELLOW, or GREEN."""
         if axis not in ("EW", "NS"):
             raise ValueError("axis must be EW or NS")
-        return self.phase == f"{axis}_GREEN"
+        if self.phase == f"{axis}_GREEN":
+            return "GREEN"
+        if self.phase == f"{axis}_YELLOW":
+            return "YELLOW"
+        return "RED"
+
+    def vehicle_green(self, axis):
+        # Keep the original movement interlock: entering on yellow is not allowed.
+        return self.vehicle_signal(axis) == "GREEN"
+
+    def pedestrian_signal(self, crossing):
+        """Displayed crosswalk indication: WALK or DONT_WALK."""
+        return "WALK" if self.pedestrian_green(crossing) else "DONT_WALK"
 
     def pedestrian_green(self, crossing):
         # Pedestrians cross a roadway ONLY while that roadway's cars are red,
         # with the opposite direction's cars green (after all-red clearance).
+        # During yellow and all-red, do not permit new crosswalk entries.
         return self.phase == ("EW_GREEN" if crosswalk_axis(crossing) == "NS"
                               else "NS_GREEN")
 
