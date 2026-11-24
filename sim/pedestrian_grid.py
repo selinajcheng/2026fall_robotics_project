@@ -15,6 +15,7 @@ from sim.pedestrian_schedule import PedestrianSchedule
 STEP_TIME = 0.5 #seconds it takes to walk one cell
 ENTRY_TIME = 0.75 #seconds to walk from an entrance into a building and fade
 STUCK_TIMEOUT = 2.0 #seconds of being blocked giving up and picking a new destination
+CARRY_CHANCE = 0.35 # chance a newly spawned pedestrian is carrying trash for the robot
 
 # ===== SINGLE PEDESTRIAN =====
 class Pedestrian:
@@ -42,6 +43,9 @@ class Pedestrian:
         self.returning = False
         self.cohort = cohort
         self.blocked_time = 0.0             # how long someone has been in the way of our next step
+        self.carrying_trash = False         # True if holding trash they might hand to the robot
+        self.holding = 0.0                  # seconds left standing still (handing trash over)
+        self.wait_at_goal = False           # True = stand still on arrival instead of picking a new goal
  
     # --- picking where to go next ---
     def _choose_goal(self):
@@ -64,6 +68,28 @@ class Pedestrian:
         self.path = []
         self.goal = None
         self.goal_is_door = False
+
+        # --- told to walk to one specific cell and wait there (used for handing trash to the robot) ---
+    def walk_to(self, goal):
+        # If mid-step, plan from the cell we are stepping INTO so the path stays connected
+        start = self.next_cell if self.next_cell is not None else self.cell
+        if goal != start:
+            route = find_grid_path(self.world, start, goal, self.static_blocked)
+            if len(route) < 2:
+                return False                # no route to that cell
+            self.path = list(route[1:])     # drop route[0]: that's where we already are / are heading
+        else:
+            self.path = []                  # already there (or about to be)
+        self.goal = goal
+        self.goal_is_door = False
+        self.wait_at_goal = True            # stand still when we arrive
+        return True
+
+    # --- let go of any special orders and go back to wandering ---
+    def release(self):
+        self.wait_at_goal = False
+        self.holding = 0.0
+        self._drop_goal()
 
     # --- crosswalk safety: is anything in the way of the WHOLE crossing? ---
     def _crossing_blocked(self, blocked):
@@ -112,6 +138,11 @@ class Pedestrian:
                 self.inside = True
             return
 
+        # Standing still on purpose (e.g. handing trash to the robot)
+        if self.holding > 0:
+            self.holding = max(0.0, self.holding - dt)
+            return
+
         # Reaching the scheduled time starts a routed trip to an entrance.
         if not self.returning and simulated_seconds >= self.return_at:
             self.returning = True
@@ -132,6 +163,10 @@ class Pedestrian:
             self.entry_target = self.door_targets[self.cell]
             self.entry_progress = 0.0
             self._drop_goal()
+            return
+
+        # Told to wait here (next to the robot): stand still instead of wandering off
+        if self.wait_at_goal and self.goal == self.cell and not self.path:
             return
  
         # ----- need a new destination? -----
@@ -237,6 +272,7 @@ class PedestrianManager:
                 self.world, self.door_targets, self.cells, self.static_blocked,
                 self.rng, selected, return_at, cohort, self.crosswalk_cells,
             )
+            pedestrian.carrying_trash = self.rng.random() < CARRY_CHANCE  # some people carry trash
             self.peds.append(pedestrian)
             occupied.add(selected)
         self.pending = remaining
