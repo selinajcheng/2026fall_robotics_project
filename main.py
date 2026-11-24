@@ -28,6 +28,8 @@ from sim.traffic_render import draw_traffic
 from sim.trash_layout import random_trash_cells
 from icons import pedestrian_icon, trash_icon, trash_can_icon, robot_icon, obstacle_icon
 from sim.pedestrian_grid import PedestrianManager, STEP_TIME
+from sim.litter import LitterSystem #pedestrians dropping trash
+from sim.interaction import HandoffSystem # pedestrians handing trash to the robot
 
 
 
@@ -40,6 +42,7 @@ PEOPLE_CELLS = set()  # CHECKPOINT2_TRAFFIC_V2: no static placeholders
 OBSTACLE_CELLS = set()  # Dynamic pedestrians will be integrated separately
 STATION_CELL = (1, 2)
 TRASH_COUNT = 7
+IDLE_RESWEEP_SECONDS = 8.0 #after finishing a sweep, it will wait this long and then sweep the map again
 BLOCKED = PEOPLE_CELLS | OBSTACLE_CELLS
 
 #PEDESTRIAN SETTINGS
@@ -115,7 +118,7 @@ class Demo:
         # 28px sidewalk cells need a smaller robot than Mahbub's 20px radius.
         self.robot.radius = 9
         self.robot.speed = 168  # pixels per second
-        self.collector = TrashCollector(sensor_range=2, capacity=3)
+        self.collector = TrashCollector(sensor_range=2, capacity=8)
         self.reachable = reachable_cells(SCENE.world, SCENE.start_cell, BLOCKED)
         self.visited = set()
         self.status = "STARTING"
@@ -133,6 +136,19 @@ class Demo:
             crosswalk_cells=CROSSWALK_CELLS,
             seed=seed
         )
+
+        #----- pedestrians drop trash fro robot to find
+        self.total_trash = TRASH_COUNT #total: Starting num + what pedestrians drop
+        self.idle_time = 0.0  #time robot has sat at COMPLETE
+        self.litter = LitterSystem(
+            self.trash,  #dropped trash is added to shared trash set
+            self.reachable,  #only drop in areas the robot can get to
+            pedestrian_keep_clear, #dont drop on station, start, or crosswalks
+            seed = seed    #same seed = same littering
+        )
+                # ----- human interaction: pedestrians handing trash to the robot -----
+        self.handoff = HandoffSystem(SCENE.world, CROSSWALK_CELLS)
+        self.carry_img = trash_icon(12, (240, 170, 60))  # small orange bag shown on pedestrians carrying trash
         self.robot_next_cell = None        # cell the robot is currently driving into (None = at rest)
         self.ped_img = pedestrian_icon(20) # pedestrian sprite, 20 px
         self._waiting_at_light = False
@@ -163,7 +179,7 @@ class Demo:
                 writer.writerow([
                     self.current_seed,
                     self.collector.collected_count,
-                    TRASH_COUNT,
+                    self.total_trash,
                     self.collector.unloads,
                     len(self.visited),
                     len(self.reachable),
@@ -178,6 +194,15 @@ class Demo:
         # TILE / STEP_TIME = pedestrian walking speed in pixels per second
         return self.traffic.robot_may_enter(cell, next_cell, TILE / STEP_TIME)
 
+       # ----- what the litter system needs to know about each pedestrian -----
+    def _walker_snapshot(self):
+        walkers = []
+        for p in self.pedestrians.peds:
+            # Only people fully outdoors who are NOT saving trash for the robot may litter
+            visible = not (p.inside or p.entering or p.exiting or p.carrying_trash)
+            walkers.append((id(p), p.cell, visible))   # (unique key, grid cell, may litter?)
+        return walkers
+    
     def update(self, dt):
         if self.paused or self.config_mode:
             return
@@ -224,6 +249,13 @@ class Demo:
         self.traffic.update(effective_dt, robot_cell=occupied_cell,
                             walker_cells = self.pedestrians.occupied_cells())
 
+        # ----- litter: pedestrians may drop trash this frame -----
+        new_litter = self.litter.update(effective_dt, self._walker_snapshot(), robot_cells)
+        for litter_cell in new_litter:
+            self.total_trash += 1                                  # one more piece to collect
+            self.log_event(f"Pedestrian dropped trash at {litter_cell}.")
+
+
         # Keep the robot parked at the disposal station briefly so the class
         # can see that the bin is unloading before the robot resumes moving.
         if self.unloading_timer > 0:
@@ -262,6 +294,32 @@ class Demo:
                 self.log_event("Unloaded trash at station.")
                 return
 
+        # ----- human interaction: wait for a pedestrian to hand over trash -----
+        if not self.collector.is_full and cell not in CROSSWALK_CELLS:
+            handoff_state, handoff_event = self.handoff.update(
+                effective_dt, cell, self.pedestrians.peds)
+        else:
+            self.handoff.cancel()                     # full bin or on a crosswalk: don't wait for anyone
+            handoff_state, handoff_event = "idle", None
+
+        if handoff_event == "accepted":
+            already_there = cell in self.trash        # was there already trash on the robot's cell?
+            self.trash.add(cell)                      # put the donated trash on the robot's cell...
+            if self.collector.collect(cell, self.trash):  # ...and let the normal pickup take it
+                self.total_trash += 1
+                self.log_event("Pedestrian put trash in the robot.")
+            else:
+                if not already_there:
+                    self.total_trash += 1             # bin full: trash stays on the ground here
+                self.log_event("Bin full: pedestrian left trash at the robot.")
+
+        if handoff_state == "waiting":
+            self.status = "WAITING FOR PEDESTRIAN"
+            return                                    # stay put until the pedestrian arrives
+        if handoff_state == "receiving":
+            self.status = "RECEIVING TRASH"
+            return                                    # stay put while the trash is handed over
+        
         # Define live blocked cells including current pedestrians
         live_blocked = BLOCKED | self.pedestrians.occupied_cells()
 
@@ -298,6 +356,16 @@ class Demo:
             self.log_event(f"Robot finished! Took {self.equivalent_1x_seconds:.1f}s at 1x speed.")
             self.export_metrics()
 
+        # ----- keep patrolling: after sitting idle, sweep the whole map again to find new litter -----
+        if next_status == "COMPLETE":
+            self.idle_time += effective_dt                 # count time spent idle
+            if self.idle_time >= IDLE_RESWEEP_SECONDS:
+                self.visited.clear()                       # forget visited cells so the robot sweeps again
+                self.idle_time = 0.0
+        else:
+            self.idle_time = 0.0                           # busy again, reset the idle timer
+
+
         # Replan each time the robot arrives at a cell. This allows newly
         # detected trash to interrupt exploration without skipping pickups.
         if desired is not None and desired != cell:
@@ -331,10 +399,16 @@ class Demo:
         draw_world(screen, SCENE)  # Selina's original city unchanged
         draw_traffic(screen, SCENE, self.traffic)
         blit_cell(screen, self.can_img, STATION_CELL)
+        self.litter.draw(screen, TILE)  # expanding ring where trash was just dropped
         for cell in self.trash:
             discovered = cell in self.collector.known_trash
             blit_cell(screen, self.trash_seen_img if discovered else self.trash_unseen_img, cell)
         self.pedestrians.draw(screen, self.ped_img) # draw all visible pedestrians
+                # Small orange bag on pedestrians who are carrying trash for the robot
+        for p in self.pedestrians.peds:
+            if p.carrying_trash and not (p.entering or p.exiting or p.inside):
+                pos = p.pixel_pos(TILE)
+                screen.blit(self.carry_img, self.carry_img.get_rect(center=(round(pos.x) + 9, round(pos.y) - 10)))
         screen.blit(self.robot_img, self.robot_img.get_rect(center=(round(self.robot.x), round(self.robot.y))))
 
         map_width = SCENE.world.pixel_size[0]
@@ -360,7 +434,7 @@ class Demo:
         screen.blit(clock_text, clock_text.get_rect(midtop=(map_width // 2, hud_top + 7)))
 
         summary = (
-            f"Collected: {self.collector.collected_count}/{TRASH_COUNT}"
+            f"Collected: {self.collector.collected_count}/{self.total_trash}"
             f"     Unloads: {self.collector.unloads}"
             f"     Visited: {len(self.visited)}/{len(self.reachable)}"
         )
