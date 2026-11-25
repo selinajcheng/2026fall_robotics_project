@@ -1,6 +1,6 @@
 # Sidewalk Trash Collection Robot
 
-CSCI 39536 team project. Run `python main.py` for the integrated four-block simulation: an autonomous robot sweeps reachable sidewalks, detects and collects trash, unloads at a disposal station, and returns to its start. The display shows collection progress, bin capacity, robot status, and a legend.
+CSCI 39536 team project. Run `python main.py` for the integrated four-block simulation: an autonomous robot collects trash while pedestrians move between buildings and cars obey traffic signals. The display shows collection progress, status, a simulated clock, an event log, and a map legend.
 
 ## File guide
 
@@ -17,18 +17,23 @@ CSCI 39536 team project. Run `python main.py` for the integrated four-block simu
 | [sim/world.py](sim/world.py)                                                         | Bounded grid and legal-move checks                               | Defines the city's walkable cells.                                                |
 | [sim/scene.py](sim/scene.py)                                                         | The map data: blocks, roads, crosswalks, buildings               | Edit `BLOCK_LAYOUTS` to move or resize buildings.                                 |
 | [sim/render.py](sim/render.py)                                                       | Background drawing: colors, sidewalks, buildings, road paint     | Edit to change the city background.                                                |
+| [sim/pedestrian_grid.py](sim/pedestrian_grid.py)                                       | Pedestrian movement and building trips                          | Uses the active doors defined by `sim/scene.py`.                                   |
+| [sim/pedestrian_schedule.py](sim/pedestrian_schedule.py)                               | Time-based pedestrian arrivals                                  | Controls the daytime cohorts.                                                      |
+| [sim/traffic.py](sim/traffic.py)                                                       | Cars and crossing signals                                       | Coordinates vehicle and pedestrian crossing permissions.                          |
+| [sim/litter.py](sim/litter.py)                                                         | Trash dropped by pedestrians                                    | Adds litter during a run.                                                          |
+| [sim/interaction.py](sim/interaction.py)                                               | Pedestrian trash handoffs                                       | Lets a nearby person give trash to the robot.                                      |
 | [sim/grid_navigation.py](sim/grid_navigation.py)                                     | Reachability, nearest-target search, and A* on sidewalk cells    | Used by the integrated demo.                                                      |
 | [sim/collection.py](sim/collection.py)                                               | Trash sensing, pickup, capacity, and unloading                   | Used by the integrated demo.                                                      |
 | [tests/test_collection.py](tests/test_collection.py)                                 | Collection and grid-navigation unit tests                       | Run `python -m unittest discover -s tests -v`.                                    |
 | [docs/project_specifications.pdf](docs/project_specifications.pdf)                   | Instructor's semester-project handout                            | Authoritative for course deadlines, submission rules, memo lengths, and grading.  |
 | [docs/copy_of_shared_google_doc.md](docs/copy_of_shared_google_doc.md)               | Selina's copy of the team-call notes and assigned pre-demo tasks | Source of truth for who is doing what and the team's initial task list.           |
-| [docs/SPEC.md](docs/SPEC.md)                                                         | Current working behavior and integration specification           | Use for the Checkpoint 1 demo scope and robot behavior.                           |
+| [docs/SPEC.md](docs/SPEC.md)                                                         | Checkpoint 1 behavior and integration specification              | Read as the baseline for later work.                                               |
 | [docs/VISUAL_ENVIRONMENT_SPEC.md](docs/VISUAL_ENVIRONMENT_SPEC.md)                   | Selina's visual environment requirements                         | Use as the target for any change to how the scene looks.                          |
 | [docs/reference/generated_city_blocks.png](docs/reference/generated_city_blocks.png) | Visual reference image                                           | Target style for rooftops, sidewalks, and road paint.                             |
 | [docs/SPEC_IDEATION.md](docs/SPEC_IDEATION.md)                                       | Earlier LLM-assisted concept draft                               | Reference for possible later features; it does not set Checkpoint 1 requirements. |
 
 
-When the documents differ, follow the course handout for course obligations, the team notes for assigned tasks, and the working spec for robot behavior. The integrated demo now includes capacity-triggered returns and unloading.
+When the documents differ, follow the course handout for course obligations and the team notes for assigned tasks. `docs/SPEC.md` records the Checkpoint 1 baseline; the current code and run instructions below describe the newer demo.
 
 Record scene-specific values, such as sensor range and grid size, alongside the code that uses them.
 
@@ -41,8 +46,8 @@ navigation.py      open-area A* for robot_demo.py
 robot_demo.py      separate navigation prototype
 icons.py           integrated demo icons
 requirements.txt
-sim/               world.py, scene.py, render.py, grid_navigation.py, collection.py
-tests/             collection and grid-navigation tests
+sim/               city, pedestrians, traffic, litter, navigation, collection
+tests/             collection, pedestrian, traffic, and trash-layout tests
 docs/              specs, team notes, course handout, reference image
 ```
 
@@ -152,7 +157,7 @@ Run `main.py` from the project folder after installing the dependencies.
 python main.py
 ```
 
-A window opens showing the city and the robot moving autonomously. Press **R** to restart, or **Esc** or the window close button to quit. On Windows, if activation is blocked, run `.venv\Scripts\python.exe main.py` instead. On WSL, the window needs WSLg (included in current Windows 11 and recent Windows 10 builds).
+A window opens showing the city and the robot moving autonomously. Press **Space** to pause, **Up/Down** to change speed, **C** for seed and speed configuration, **R** to restart with the current seed, or **Esc** to quit. On Windows, if activation is blocked, run `.venv\Scripts\python.exe main.py` instead. On WSL, the window needs WSLg (included in current Windows 11 and recent Windows 10 builds).
 
 **Save a picture without opening a window** (useful for the memo and for checking a change):
 
@@ -160,13 +165,15 @@ A window opens showing the city and the robot moving autonomously. Press **R** t
 python main.py --screenshot out.png
 ```
 
-**What you will see.** An aerial view of four long blocks around one unpainted intersection, styled after [docs/reference/generated_city_blocks.png](docs/reference/generated_city_blocks.png). Each block has a two-cell-wide peach sidewalk with rounded corners and faint paving joints, and six or seven stepped grey rooftops. Roads are four cells wide. Eight white crosswalks connect the sidewalks: four around the intersection and one at the end of each road. White stop bars and dashed lane lines end before the crossings. The robot travels on sidewalks and crosswalks while routing around two fixed people and two obstacles. The city has 416 walkable cells; 412 are reachable with those four cells blocked.
+**What you will see.** An aerial view of four long blocks around one unpainted intersection, styled after [docs/reference/generated_city_blocks.png](docs/reference/generated_city_blocks.png). The city has 416 walkable sidewalk and crosswalk cells. Gold-framed door marks identify the 23 buildings with direct sidewalk entrances; two interior buildings do not have an active entrance. Pedestrians fade out through those marked doors, walk through the city, and enter a different marked building. Rush-hour trips favor more distant buildings, while lunch and afternoon trips favor nearer ones. A seed reproduces the same door choices and trash layout.
 
-**Robot behavior.** The robot starts at `(1, 1)`, senses trash within two cells by Manhattan distance, and collects an item when it reaches its cell. Undetected trash is red; detected trash is green. It visits reachable cells, prioritizes detected trash, and uses A* routes around blocked cells. Its bin holds three items. When full, it goes to the station at `(1, 2)`, unloads, and resumes. After sweeping, it unloads any remaining items and returns to the start. The panel below the map shows collected items, unloads, visited cells, current status, and bin fill.
+**Show the building flow.** Set a seed in the **C** configuration screen, then use **Up** to speed toward the 8:45 AM morning cohort. Watch people leave marked doors and enter different marked buildings. Press **R** to repeat the same seeded run, or choose another seed to compare a different set of building trips.
 
-**Map facts.** 36 columns by 24 rows, 28-pixel tiles, coordinates `(column, row)` from the top-left `(0, 0)`. People, obstacles, trash, and the station currently use fixed cell positions in `main.py` so runs are repeatable.
+**Robot behavior.** The robot starts at `(1, 1)`, senses trash within two cells by Manhattan distance, and collects an item when it reaches its cell. Undetected trash is red; detected trash is green. It visits reachable cells, prioritizes detected trash, and uses A* routes around pedestrians. Its bin holds eight items. When full, it goes to the station at `(1, 2)`, unloads, and resumes. Cars follow traffic lights; the robot and pedestrians wait for safe crossing signals. Pedestrians can drop new litter or hand trash to the robot. The panel shows collection progress, status, and bin fill; a run's metrics are appended to `simulation_metrics.csv` when the robot first completes its sweep.
 
-**Separate navigation prototype.** Run `python robot_demo.py` for the open-area robot demo. Click a destination to route around obstacles, or use the arrow or WASD keys for manual movement. This prototype includes moving pedestrians; the integrated city demo uses fixed people as blocked cells.
+**Map facts.** 36 columns by 24 rows, 28-pixel tiles, coordinates `(column, row)` from the top-left `(0, 0)`. Seven starting trash cells are randomized per seed; marked door cells are reserved so trash does not hide an entrance.
+
+**Separate navigation prototype.** Run `python robot_demo.py` for the older open-area robot demo. Click a destination to route around obstacles, or use the arrow or WASD keys for manual movement.
 
 **Run the unit tests:**
 

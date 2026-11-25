@@ -44,6 +44,15 @@ class Building:
     level: int
 
 
+@dataclass(frozen=True)
+class BuildingDoor:
+    """A pedestrian doorway between a sidewalk cell and one building."""
+
+    building_index: int
+    sidewalk_cell: Cell
+    interior_cell: Cell
+
+
 # Per block (same order as `CityScene.blocks`: top-left, top-right, bottom-left,
 # bottom-right): (column, row, width, height, level), relative to the
 # block's 12-by-6 lot.
@@ -111,14 +120,14 @@ class CityScene:
         return "road"
 
 
-def building_entrance_targets(
+def building_doors(
     scene: CityScene,
     keep_clear: frozenset[Cell] | set[Cell] = frozenset(),
-) -> dict[Cell, Cell]:
-    """Map each distinct sidewalk entrance to one adjacent building cell."""
-    entrances: dict[Cell, Cell] = {}
+) -> tuple[BuildingDoor, ...]:
+    """Give each sidewalk-accessible building one distinct, fixed doorway."""
+    doors: list[BuildingDoor] = []
     used: set[Cell] = set()
-    for building in scene.buildings:
+    for building_index, building in enumerate(scene.buildings):
         left, top, width, height = building.rect
         center_x = left + (width - 1) / 2
         center_y = top + (height - 1) / 2
@@ -142,9 +151,17 @@ def building_entrance_targets(
             building_neighbors = cells_in(building.rect) & {
                 (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)
             }
-            entrances[entrance] = min(building_neighbors)
+            doors.append(BuildingDoor(building_index, entrance, min(building_neighbors)))
             used.add(entrance)
-    return entrances
+    return tuple(doors)
+
+
+def building_entrance_targets(
+    scene: CityScene,
+    keep_clear: frozenset[Cell] | set[Cell] = frozenset(),
+) -> dict[Cell, Cell]:
+    """Compatibility view of the same door data for pedestrian animation."""
+    return {door.sidewalk_cell: door.interior_cell for door in building_doors(scene, keep_clear)}
 
 
 def building_entrance_cells(

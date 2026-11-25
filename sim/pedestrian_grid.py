@@ -1,6 +1,6 @@
-""" CHECK POINT 2: Pedestrian Grid
+"""Pedestrian movement, building trips, and crosswalk rules.
 
-Pedestrians walk in the sidewalk/crosswalk cells. The robot will treat the cells they occupy as temporarily blocked and yields until they pass. 
+Pedestrians walk in the sidewalk/crosswalk cells. The robot will treat the cells they occupy as temporarily blocked and yields until they pass.
 
 NEW RULES FOR PEDESTRIANS:
 1: head on pedestrians can walk through/past eachother
@@ -20,7 +20,8 @@ CARRY_CHANCE = 0.35 # chance a newly spawned pedestrian is carrying trash for th
 # ===== SINGLE PEDESTRIAN =====
 class Pedestrian:
     def __init__(self, world, door_targets, cells, static_blocked, rng, start_cell,
-                 return_at, cohort, crosswalk_cells=()):
+                 return_at, cohort, crosswalk_cells=(), destination_cell=None,
+                 destination_building_index=None, origin_building_index=None):
         self.world = world                  # the city world (needed by find_grid_path)
         self.door_targets = door_targets    # entrance cell -> adjacent cell inside its building
         self.doors = list(door_targets)
@@ -42,19 +43,27 @@ class Pedestrian:
         self.return_at = return_at          # accelerated-clock time to begin heading inside
         self.returning = False
         self.cohort = cohort
+        self.destination_cell = destination_cell
+        self.destination_building_index = destination_building_index
+        self.origin_building_index = origin_building_index
         self.blocked_time = 0.0             # how long someone has been in the way of our next step
         self.carrying_trash = False         # True if holding trash they might hand to the robot
         self.holding = 0.0                  # seconds left standing still (handing trash over)
         self.wait_at_goal = False           # True = stand still on arrival instead of picking a new goal
- 
+
     # --- picking where to go next ---
     def _choose_goal(self):
         for _ in range(5):                  # try up to 5 times to find a reachable destination
             if self.returning:
-                goal, is_door = self.rng.choice(self.doors), True
+                goal = self.destination_cell if self.destination_cell is not None else self.rng.choice(self.doors)
+                is_door = True
             else:
                 goal, is_door = self.rng.choice(self.cells), False
             if goal == self.cell:
+                if is_door:
+                    self.goal, self.goal_is_door = goal, True
+                    self.path = []
+                    return
                 continue                    # already standing there, pick again
             route = find_grid_path(self.world, self.cell, goal, self.static_blocked)
             if len(route) >= 2:             # a valid route has at least start + one more cell
@@ -62,7 +71,7 @@ class Pedestrian:
                 self.path = list(route[1:])  # drop route[0]: that's the cell we're already on
                 return
         self.path = []                      # nothing reachable found; try again next frame
- 
+
     def _drop_goal(self):
         # Forget the current trip entirely (used when arriving, giving up, or leaving a building)
         self.path = []
@@ -111,13 +120,13 @@ class Pedestrian:
             return False                    # someone has no route right now
         # Each one wants the cell the other is standing on
         return self.path[0] == other.cell and other.path[0] == self.cell
- 
+
     # --- per-frame update ---
     def update(self, dt, blocked, simulated_seconds, may_step=None, passable=()):
         """dt = seconds since last frame.
         blocked = cells held by the robot and other pedestrians (not our own).
         may_step = optional function(cell, next_cell) -> bool, used for crosswalk signals."""
- 
+
         # Finished pedestrians remain hidden until the manager removes them.
         if self.inside:
             return
@@ -147,7 +156,7 @@ class Pedestrian:
         if not self.returning and simulated_seconds >= self.return_at:
             self.returning = True
             self._drop_goal()
- 
+
         # ----- mid-step: keep walking toward next_cell -----
         if self.next_cell is not None:
             self.progress += dt / STEP_TIME  # advance the step by the fraction of STEP_TIME elapsed
@@ -156,7 +165,7 @@ class Pedestrian:
             self.cell = self.next_cell      # step finished: we now officially stand on the new cell
             self.next_cell = None
             self.progress = 0.0
- 
+
         # ----- reached a door: go inside -----
         if self.goal_is_door and self.cell == self.goal:
             self.entering = True
@@ -168,14 +177,14 @@ class Pedestrian:
         # Told to wait here (next to the robot): stand still instead of wandering off
         if self.wait_at_goal and self.goal == self.cell and not self.path:
             return
- 
+
         # ----- need a new destination? -----
         if not self.path:                   # path is empty = trip finished (or none started yet)
             self._drop_goal()
             self._choose_goal()             # pick a new destination and compute the route
             if not self.path:
                 return                      # couldn't find one; try again next frame
- 
+
         # ----- try to step onto the next cell -----
         nxt = self.path[0]                  # the next cell on our route (peek, don't remove yet)
         if may_step is not None and not may_step(self.cell, nxt):
@@ -196,7 +205,7 @@ class Pedestrian:
         self.blocked_time = 0.0             # path is clear, reset the stuck timer
         self.next_cell = self.path.pop(0)   # commit to the step (also reserves that cell for others)
         self.progress = 0.0
- 
+
     # --- what the robot needs to know ---
     def occupied_cells(self):
         if self.inside:
@@ -205,7 +214,7 @@ class Pedestrian:
         if self.next_cell is not None:
             cells.add(self.next_cell)       # plus the cell we're walking into (reserved early)
         return cells
- 
+
     # --- drawing helper: smooth position between cells ---
     def pixel_pos(self, tile):
         # Pixel center of the current cell
@@ -227,54 +236,81 @@ class Pedestrian:
         # Pixel center of the cell we're walking into
         b = pygame.Vector2((self.next_cell[0] + 0.5) * tile, (self.next_cell[1] + 0.5) * tile)
         return a.lerp(b, self.progress)     # slide from a to b by 'progress' (0..1)
- 
- 
+
+
 # ===== MANAGER (what main.py talks to) =====
 class PedestrianManager:
-    def __init__(self, world, cells, static_blocked, door_targets, seed=7,
+    def __init__(self, world, cells, static_blocked, door_records, seed=7,
                  keep_clear=(), crosswalk_cells=()):
-        if not door_targets:
+        if not door_records:
             raise ValueError("PedestrianManager requires at least one building entrance")
         self.world = world
         self.cells = sorted(c for c in cells if c not in static_blocked and c not in keep_clear)
         self.static_blocked = static_blocked
         self.crosswalk_cells = crosswalk_cells
         self.rng = random.Random(seed)       # seeded so runs repeat
-        self.tile = world.tile_size         # pixels per grid cell (for drawing)
-        self.door_targets = dict(door_targets)
-        self.doors = list(door_targets)
-        self.rng.shuffle(self.doors)
-        self.door_cursor = 0
-        self.peds = []                      # only pedestrians currently outdoors
-        self.pending = []                   # scheduled people waiting for a clear entrance
+        self.tile = world.tile_size          # pixels per grid cell (for drawing)
+        self.doors = tuple(door_records)
+        self.door_targets = {
+            door.sidewalk_cell: door.interior_cell for door in self.doors
+        }
+        self.departures_by_building = {door.building_index: 0 for door in self.doors}
+        self.arrivals_by_building = {door.building_index: 0 for door in self.doors}
+        self.peds = []                       # only pedestrians currently outdoors
+        self.pending = []                    # scheduled people waiting for a clear entrance
         self.schedule = PedestrianSchedule(seed + 1)
 
     def _queue_requests(self, simulated_seconds):
         for request in self.schedule.update(simulated_seconds):
             self.pending.extend((return_at, request.label) for return_at in request.return_times)
 
+    def _choose_origin(self, occupied):
+        candidates = [door for door in self.doors if door.sidewalk_cell not in occupied]
+        if not candidates:
+            return None
+        # Favor less-used buildings without making departures a fixed rotation.
+        weights = [1 / (1 + self.departures_by_building[door.building_index])
+                   for door in candidates]
+        return self.rng.choices(candidates, weights=weights, k=1)[0]
+
+    def _choose_destination(self, origin, cohort):
+        candidates = [door for door in self.doors
+                      if door.building_index != origin.building_index]
+        if not candidates:
+            return origin
+
+        def distance(door):
+            return (abs(door.sidewalk_cell[0] - origin.sidewalk_cell[0])
+                    + abs(door.sidewalk_cell[1] - origin.sidewalk_cell[1]))
+
+        if cohort in ("morning_rush", "evening_rush"):
+            weights = [1 + distance(door) for door in candidates]
+        elif cohort in ("lunch", "afternoon"):
+            weights = [1 / (1 + distance(door)) for door in candidates]
+        else:
+            weights = [1] * len(candidates)
+        return self.rng.choices(candidates, weights=weights, k=1)[0]
+
     def _release_pending(self, robot_cells):
         occupied = set(robot_cells) | self.occupied_cells()
         remaining = []
         for return_at, cohort in self.pending:
-            selected = None
-            for offset in range(len(self.doors)):
-                index = (self.door_cursor + offset) % len(self.doors)
-                candidate = self.doors[index]
-                if candidate not in occupied:
-                    selected = candidate
-                    self.door_cursor = (index + 1) % len(self.doors)
-                    break
-            if selected is None:
+            origin = self._choose_origin(occupied)
+            if origin is None:
                 remaining.append((return_at, cohort))
                 continue
+            destination = self._choose_destination(origin, cohort)
             pedestrian = Pedestrian(
                 self.world, self.door_targets, self.cells, self.static_blocked,
-                self.rng, selected, return_at, cohort, self.crosswalk_cells,
+                self.rng, origin.sidewalk_cell, return_at, cohort, self.crosswalk_cells,
+                destination_cell=destination.sidewalk_cell,
+                destination_building_index=destination.building_index,
+                origin_building_index=origin.building_index,
             )
-            pedestrian.carrying_trash = self.rng.random() < CARRY_CHANCE  # some people carry trash
+            pedestrian.carrying_trash = self.rng.random() < CARRY_CHANCE
             self.peds.append(pedestrian)
-            occupied.add(selected)
+            self.departures_by_building[origin.building_index] += 1
+            occupied.add(origin.sidewalk_cell)
         self.pending = remaining
 
     def update(self, dt, robot_cells, simulated_seconds, may_step=None):
@@ -286,19 +322,21 @@ class PedestrianManager:
             for other in self.peds:
                 if other is p:
                     continue
-                blocked |= other.occupied_cells()  # add every OTHER pedestrian's cells
+                blocked |= other.occupied_cells()
                 if p.is_head_on_with(other):
-                    passable.add(other.cell)       # standoff: let them swap
+                    passable.add(other.cell)
             p.update(dt, blocked, simulated_seconds, may_step, passable)
+            if p.inside and p.destination_building_index is not None:
+                self.arrivals_by_building[p.destination_building_index] += 1
         self.peds = [p for p in self.peds if not p.inside]
- 
+
     def occupied_cells(self):
         # All cells currently held by any visible pedestrian (the robot and traffic read this)
         cells = set()
         for p in self.peds:
             cells |= p.occupied_cells()
         return cells
- 
+
     def draw(self, screen, icon):
         for p in self.peds:
             if p.inside:
@@ -322,4 +360,4 @@ class PedestrianManager:
                 draw_icon = icon.copy()
                 draw_icon.set_alpha(round(255 * max(0.0, opacity)))
             screen.blit(draw_icon, draw_icon.get_rect(center=(round(pos.x), round(pos.y))))
- 
+

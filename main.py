@@ -21,8 +21,8 @@ import pygame
 from robot import Robot  # Reuse Mahbub's robot implementation unchanged
 from sim.collection import TrashCollector
 from sim.grid_navigation import find_grid_path, nearest_target, reachable_cells
-from sim.render import draw_world
-from sim.scene import building_entrance_targets, create_city_scene
+from sim.render import draw_doors, draw_world
+from sim.scene import building_doors, create_city_scene
 from sim.traffic import TrafficSystem
 from sim.traffic_render import draw_traffic
 from sim.trash_layout import random_trash_cells
@@ -98,13 +98,17 @@ class Demo:
         self.seed_input_str = str(seed)
         self.input_box_active = False
 
+        self.doors = building_doors(
+            SCENE, {STATION_CELL, SCENE.start_cell} | CROSSWALK_CELLS
+        )
+        door_cells = {door.sidewalk_cell for door in self.doors}
         self.trash = random_trash_cells(
-            SCENE, TRASH_COUNT, keep_clear={STATION_CELL}, rng=random.Random(seed)
+            SCENE, TRASH_COUNT, keep_clear={STATION_CELL} | door_cells,
+            rng=random.Random(seed)
         )
         pedestrian_keep_clear = (
-            {STATION_CELL, SCENE.start_cell} | self.trash | CROSSWALK_CELLS
+            {STATION_CELL, SCENE.start_cell} | self.trash | CROSSWALK_CELLS | door_cells
         )
-        door_targets = building_entrance_targets(SCENE, pedestrian_keep_clear)
 
         for cell in PEOPLE_CELLS | OBSTACLE_CELLS | self.trash | {STATION_CELL}:
             if not SCENE.world.is_walkable(cell):
@@ -131,7 +135,7 @@ class Demo:
             SCENE.world,                   # the city world
             self.reachable,                # cells pedestrians are allowed to use
             BLOCKED,                       # permanently blocked cells
-            door_targets=door_targets,     # entrances and their adjacent building cells
+            door_records=self.doors,       # visible doors and their adjacent building cells
             keep_clear=pedestrian_keep_clear,
             crosswalk_cells=CROSSWALK_CELLS,
             seed=seed
@@ -397,6 +401,7 @@ class Demo:
 
     def draw(self, screen):
         draw_world(screen, SCENE)  # Selina's original city unchanged
+        draw_doors(screen, self.doors, TILE)
         draw_traffic(screen, SCENE, self.traffic)
         blit_cell(screen, self.can_img, STATION_CELL)
         self.litter.draw(screen, TILE)  # expanding ring where trash was just dropped
@@ -502,6 +507,9 @@ class Demo:
 
         # Display Seed info
         screen.blit(small_font.render(f"Seed: {self.current_seed}", True, white), (col1_x, 115))
+        pygame.draw.rect(screen, (53, 42, 38), pygame.Rect(col2_x + 7, 108, 11, 16), border_radius=2)
+        pygame.draw.rect(screen, (248, 204, 100), pygame.Rect(col2_x + 7, 108, 11, 16), width=2, border_radius=2)
+        screen.blit(small_font.render("Door", True, white), (col2_x + 32, 109))
         pygame.draw.line(screen, (50, 60, 75), (panel_x + 15, 140), (panel_x + panel_width - 15, 140), 1)
 
         # Event Log section in side panel with text wrapping

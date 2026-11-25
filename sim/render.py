@@ -9,7 +9,7 @@ from functools import lru_cache
 
 import pygame
 
-from .scene import BLOCK_HEIGHT, BLOCK_WIDTH, ROAD_WIDTH, Building, CellRect, CityScene
+from .scene import BLOCK_HEIGHT, BLOCK_WIDTH, ROAD_WIDTH, Building, BuildingDoor, CellRect, CityScene
 
 # The static background is drawn once at this multiple of the screen size and
 # scaled down, which smooths the rounded corners and bevels.
@@ -247,6 +247,22 @@ def draw_start_marker(screen: pygame.Surface, scene: CityScene) -> None:
     center = (column * tile + tile // 2, row * tile + tile // 2)
     pygame.draw.circle(screen, MARKING_COLOR, center, tile // 3 + 3)
     pygame.draw.circle(screen, START_COLOR, center, tile // 3)
+
+
+def draw_doors(screen: pygame.Surface, doors: tuple[BuildingDoor, ...], tile: int) -> None:
+    """Mark each active doorway on the building edge facing its sidewalk cell."""
+    for door in doors:
+        sx, sy = door.sidewalk_cell
+        ix, iy = door.interior_cell
+        if ix != sx:
+            center = (max(ix, sx) * tile, round((sy + 0.5) * tile))
+            frame = pygame.Rect(0, 0, max(5, round(tile * 0.25)), max(12, round(tile * 0.55)))
+        else:
+            center = (round((sx + 0.5) * tile), max(iy, sy) * tile)
+            frame = pygame.Rect(0, 0, max(12, round(tile * 0.55)), max(5, round(tile * 0.25)))
+        frame.center = center
+        pygame.draw.rect(screen, (53, 42, 38), frame, border_radius=2)
+        pygame.draw.rect(screen, (248, 204, 100), frame, width=2, border_radius=2)
 
 
 def draw_world(screen: pygame.Surface, scene: CityScene) -> None:
